@@ -2,12 +2,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
+import json
 import os
 import time
 import numpy as np
-from six.moves import xrange
 import tensorflow as tf
-from multiprocessing import Pool
 from os.path import join as pjoin
 import model as ocr_model
 from util import read_vocab, padded
@@ -26,10 +26,10 @@ def create_model(session, vocab_size, forward_only):
                             forward_only=forward_only, decode=FLAGS.decode)
     ckpt = tf.train.get_checkpoint_state(FLAGS.train_dir)
     if ckpt and tf.train.checkpoint_exists(ckpt.model_checkpoint_path):
-        print("Reading model parameters from %s" % ckpt.model_checkpoint_path)
+        print("Reading model parameters from %s" % ckpt.model_checkpoint_path, file=sys.stderr)
         model.saver.restore(session, ckpt.model_checkpoint_path)
     else:
-        print("Created model with fresh parameters.")
+        print("Created model with fresh parameters.", file=sys.stderr)
         session.run(tf.global_variables_initializer())
     return model
 
@@ -85,35 +85,33 @@ def fix_sent(model, sess, sents):
     beam_strs = detokenize(beam_toks, reverse_vocab)
     return beam_strs, probs
 
+def cleanWit(s):
+    return s.replace(u'\u00ad\n', '').replace(u'\n', ' ')
 
 def decode():
     global reverse_vocab, vocab
-    folder_out = FLAGS.out_dir
-    if not os.path.exists(folder_out):
-        os.makedirs(folder_out)
-    print("Preparing NLC data in %s" % FLAGS.data_dir)
+    print("Preparing NLC data in %s" % FLAGS.data_dir, file=sys.stderr)
     vocab_path = pjoin(FLAGS.voc_dir, "vocab.dat")
     vocab, reverse_vocab = read_vocab(vocab_path)
     vocab_size = len(vocab)
-    print("Vocabulary size: %d" % vocab_size)
+    print("Vocabulary size: %d" % vocab_size, file=sys.stderr)
     sess = tf.Session()
-    print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
+    print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size), file=sys.stderr)
     model = create_model(sess, len(vocab), True)
-    f_o = open(pjoin(folder_out,  'test.' + FLAGS.decode + '.o.txt'), 'w', encoding='utf-8')
-    f_p = open(pjoin(folder_out, 'test.' + FLAGS.decode + '.p.txt'), 'w')
     line_id = 0
-    with open(pjoin(FLAGS.data_dir,  'test.x.txt'), encoding='utf-8') as f_:
-        for line in f_:
-            sents = [ele for ele in line.strip('\n').split('\t')][:50]
-            sents = [ele for ele in sents if len(ele.strip()) > 0]
-            output_sents, output_probs = fix_sent(model, sess, sents)
-            for out_sent in output_sents:
-                f_o.write(out_sent + '\n')
-            f_p.write('\n'.join(list(map(str, output_probs))) + '\n')
-            line_id += 1
-    f_o.close()
-    f_p.close()
-
+    for rec in sys.stdin:
+        doc = json.loads(rec)
+        res = list()
+        for line in doc['lines']:
+            variants = [line['text']]
+            if 'wits' in line:
+                variants += [cleanWit(w['text']) for w in line['wits']]
+            # sents = [ele for ele in line.strip('\n').split('\t')][:50]
+            # sents = [ele for ele in sents if len(ele.strip()) > 0]
+            hyps, probs = fix_sent(model, sess, variants)
+            line['hyps'] = [{'text': h, 'p': p} for h, p in zip(hyps, probs)] 
+            res.append(line)
+        print(json.dumps({'id': doc['id'], 'lines': res}))
 
 def main(_):
     decode()
